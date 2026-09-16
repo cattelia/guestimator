@@ -1,6 +1,6 @@
 {
   // wrangler.jsonc
-  "name": "Guestimator",
+  "name": "guestimator",
   "compatibility_date": "2026-09-01",
   "main": "src/index.js",
   "assets": {
