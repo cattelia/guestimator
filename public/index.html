@@ -100,6 +100,24 @@
     margin:0 0 2px;
     letter-spacing:-0.01em;
   }
+  .page-header-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    gap:12px;
+    flex-wrap:wrap;
+  }
+  .sync-status{
+    font-size:0.74rem;
+    font-weight:600;
+    white-space:nowrap;
+    padding:3px 10px;
+    border-radius:999px;
+  }
+  .sync-status.sync-saved{ color:var(--green); background:var(--green-bg); }
+  .sync-status.sync-saving{ color:var(--text-dim); background:var(--track); }
+  .sync-status.sync-offline{ color:var(--red); background:var(--red-bg); }
+  .sync-status.sync-none{ color:var(--text-dim); background:var(--track); }
   .sub{
     color:var(--text-dim);
     font-size:0.85rem;
@@ -627,7 +645,10 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Live Picking Dashboard</h1>
+  <div class="page-header-row">
+    <h1>Live Picking Dashboard</h1>
+    <span id="syncStatus" class="sync-status">☁ Synced</span>
+  </div>
   <p class="sub">Check off who's actively picking right now — the gauge updates to show expected team output vs. what's needed to hit the shift goal.</p>
 
   <div class="grid">
@@ -896,6 +917,7 @@ function loadCustomEmployees(){
 }
 function saveCustomEmployees(){
   try{ localStorage.setItem(CUSTOM_EMP_KEY, JSON.stringify(customEmployees)); }catch(e){}
+  scheduleServerSync();
 }
 let customEmployees = loadCustomEmployees();
 
@@ -907,6 +929,7 @@ function loadRemovedIds(){
 }
 function saveRemovedIds(){
   try{ localStorage.setItem(REMOVED_KEY, JSON.stringify(Array.from(removedIds))); }catch(e){}
+  scheduleServerSync();
 }
 let removedIds = loadRemovedIds();
 
@@ -919,6 +942,7 @@ function loadCurrentShift(){
 }
 function saveCurrentShift(){
   try{ localStorage.setItem(SHIFT_VIEW_KEY, currentShift); }catch(e){}
+  scheduleServerSync();
 }
 let currentShift = loadCurrentShift();
 
@@ -937,6 +961,7 @@ function loadOverrides(key){
 }
 function saveOverrides(key, obj){
   try{ localStorage.setItem(key, JSON.stringify(obj)); }catch(e){}
+  scheduleServerSync();
 }
 let rateOverrides = loadOverrides(RATE_KEY);
 let statusOverrides = loadOverrides(STATUS_KEY);
@@ -960,6 +985,7 @@ function loadActive(){
 }
 function saveActive(set){
   try{ localStorage.setItem(ACTIVE_KEY, JSON.stringify(Array.from(set))); }catch(e){}
+  scheduleServerSync();
 }
 function loadTargets(){
   try{
@@ -970,9 +996,155 @@ function loadTargets(){
 }
 function saveTargets(obj){
   try{ localStorage.setItem(TARGET_KEY, JSON.stringify(obj)); }catch(e){}
+  scheduleServerSync();
 }
 
 let activeIds = loadActive();
+
+// ---- cross-device sync (Cloudflare KV, via /api/state) ----
+// localStorage stays the instant local cache — the page still renders
+// immediately from it with zero loading flash. This layer keeps a shared
+// copy on the server in sync with it, behind the same login every device
+// already has to pass, so the same data shows up everywhere you log in
+// from. If the KV isn't set up, or the network is down, everything just
+// keeps working off the local cache alone — nothing here can break the
+// app if sync itself isn't available.
+let syncTimer = null;
+const SYNC_DEBOUNCE_MS = 600;
+
+function getFullState(){
+  return {
+    activeIds: Array.from(activeIds),
+    rateOverrides,
+    statusOverrides,
+    customEmployees,
+    removedIds: Array.from(removedIds),
+    currentShift,
+    targets: {
+      startProd: parseFloat(startProdEl.value) || 0,
+      finalGoal: parseFloat(finalGoalEl.value) || 0,
+      prodEndTime: prodEndTimeEl.value || "",
+    },
+    stamps,
+  };
+}
+
+function setSyncStatus(state){
+  const el = document.getElementById("syncStatus");
+  if(!el) return;
+  el.classList.remove("sync-saved", "sync-saving", "sync-offline", "sync-none");
+  if(state === "saving"){
+    el.textContent = "☁ Saving…";
+    el.classList.add("sync-saving");
+  } else if(state === "offline"){
+    el.textContent = "⚠ Sync unavailable — saved on this device only";
+    el.classList.add("sync-offline");
+  } else if(state === "not-configured"){
+    el.textContent = "Local only (cross-device sync not set up)";
+    el.classList.add("sync-none");
+  } else {
+    el.textContent = "☁ Synced";
+    el.classList.add("sync-saved");
+  }
+}
+
+async function pushStateToServer(){
+  setSyncStatus("saving");
+  try{
+    const res = await fetch("/api/state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(getFullState()),
+    });
+    if(res.status === 503){ setSyncStatus("not-configured"); return; }
+    if(!res.ok) throw new Error("save failed");
+    setSyncStatus("saved");
+  }catch(e){
+    setSyncStatus("offline");
+  }
+}
+
+function scheduleServerSync(){
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushStateToServer, SYNC_DEBOUNCE_MS);
+}
+
+async function fetchStateFromServer(){
+  try{
+    const res = await fetch("/api/state");
+    if(res.status === 503) return { configured: false };
+    if(!res.ok) return { configured: true, ok: false };
+    const data = await res.json();
+    return { configured: true, ok: true, data };
+  }catch(e){
+    return { configured: true, ok: false };
+  }
+}
+
+function applyServerState(data){
+  if(!data || typeof data !== "object") data = {};
+
+  if(Object.keys(data).length === 0){
+    // Nothing has ever been synced from any device yet — treat this
+    // device's current local data as the starting point and push it up.
+    scheduleServerSync();
+    return;
+  }
+
+  if(Array.isArray(data.activeIds)){
+    activeIds = new Set(data.activeIds);
+    try{ localStorage.setItem(ACTIVE_KEY, JSON.stringify(data.activeIds)); }catch(e){}
+  }
+  if(data.rateOverrides && typeof data.rateOverrides === "object"){
+    rateOverrides = data.rateOverrides;
+    try{ localStorage.setItem(RATE_KEY, JSON.stringify(rateOverrides)); }catch(e){}
+  }
+  if(data.statusOverrides && typeof data.statusOverrides === "object"){
+    statusOverrides = data.statusOverrides;
+    try{ localStorage.setItem(STATUS_KEY, JSON.stringify(statusOverrides)); }catch(e){}
+  }
+  if(Array.isArray(data.customEmployees)){
+    customEmployees = data.customEmployees;
+    try{ localStorage.setItem(CUSTOM_EMP_KEY, JSON.stringify(customEmployees)); }catch(e){}
+  }
+  if(Array.isArray(data.removedIds)){
+    removedIds = new Set(data.removedIds);
+    try{ localStorage.setItem(REMOVED_KEY, JSON.stringify(data.removedIds)); }catch(e){}
+  }
+  if(data.currentShift === "AM" || data.currentShift === "PM"){
+    currentShift = data.currentShift;
+    try{ localStorage.setItem(SHIFT_VIEW_KEY, currentShift); }catch(e){}
+  }
+  if(data.targets && typeof data.targets === "object"){
+    if(typeof data.targets.startProd === "number") startProdEl.value = data.targets.startProd;
+    if(typeof data.targets.finalGoal === "number") finalGoalEl.value = data.targets.finalGoal;
+    if(typeof data.targets.prodEndTime === "string") prodEndTimeEl.value = data.targets.prodEndTime;
+    try{ localStorage.setItem(TARGET_KEY, JSON.stringify(data.targets)); }catch(e){}
+  }
+  if(Array.isArray(data.stamps)){
+    stamps = data.stamps;
+    selectedStampIndex = stamps.length ? stamps.length - 1 : -1;
+    try{ localStorage.setItem(STAMPS_KEY, JSON.stringify(stamps)); }catch(e){}
+  }
+
+  // Re-render everything now that server data has been applied on top of
+  // whatever was showing from the local cache.
+  recomputeHoursLeft();
+  document.querySelectorAll(".shift-toggle-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.shift === currentShift);
+  });
+  renderRoster(searchInput.value);
+  updateAll();
+  renderStamps();
+  setSyncStatus("saved");
+}
+
+async function initSync(){
+  const result = await fetchStateFromServer();
+  if(!result.configured){ setSyncStatus("not-configured"); return; }
+  if(!result.ok){ setSyncStatus("offline"); return; }
+  applyServerState(result.data);
+}
 
 const rosterBody = document.getElementById("rosterBody");
 const searchInput = document.getElementById("search");
@@ -1389,6 +1561,7 @@ function loadStamps(){
 }
 function saveStamps(){
   try{ localStorage.setItem(STAMPS_KEY, JSON.stringify(stamps)); }catch(e){}
+  scheduleServerSync();
 }
 let stamps = loadStamps();
 let selectedStampIndex = stamps.length ? stamps.length - 1 : -1;
@@ -1841,6 +2014,7 @@ document.querySelectorAll(".shift-toggle-btn").forEach(b => {
 renderRoster();
 updateAll();
 renderStamps();
+initSync();
 </script>
 </body>
 </html>
