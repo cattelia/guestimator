@@ -7,7 +7,7 @@
     "directory": "./public",
     "binding": "ASSETS",
     "run_worker_first": true,
-  }
+  },
 
   // OPTIONAL — enables the 5-attempts-then-15-minute-lockout feature.
   // Without this, login still works fine, you just don't get lockout
@@ -15,13 +15,13 @@
   //
   // To turn it on:
   //   1. In the Cloudflare dashboard: Workers & Pages -> KV -> Create namespace
-  //      -> name it "LOGIN_ATTEMPTS" (name doesn't have to match, just pick
+  //      -> name it "GUESTIMATOR_APP_STATE" (name doesn't have to match, just pick
   //      something you'll recognize).
   //   2. Copy the namespace ID it gives you.
   //   3. Uncomment the block below and paste that ID in.
   //   4. Redeploy.
   //
-  // "kv_namespaces": [
-  //   { "binding": "LOGIN_ATTEMPTS", "id": "PASTE_NAMESPACE_ID_HERE" }
-  // ]
+   "kv_namespaces": [
+     { "binding": "GUESTIMATOR_APP_STATE", "id": "bc2c6ff51ef746d2848ed02acf950f6f" }
+   ]
 }
