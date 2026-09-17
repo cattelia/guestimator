@@ -1,27 +1,26 @@
 {
-  // wrangler.jsonc
-  "name": "guestimator",
+  "name": "live-picking-dashboard",
   "compatibility_date": "2026-09-01",
   "main": "src/index.js",
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": true,
+    "run_worker_first": true
   },
 
-  // OPTIONAL — enables the 5-attempts-then-15-minute-lockout feature.
-  // Without this, login still works fine, you just don't get lockout
-  // protection against repeated guessing.
+  // Cross-device sync is on — this namespace is what lets the roster,
+  // active pickers, stamps, and shift goal show up the same on every
+  // device you log into.
+  "kv_namespaces": [
+    { "binding": "GUESTIMATOR_APP_STATE", "id": "bc2c6ff51ef746d2848ed02acf950f6f" }
+  ]
+
+  // OPTIONAL — separately enables the 5-attempts-then-15-minute login
+  // lockout feature. Create another KV namespace named LOGIN_ATTEMPTS the
+  // same way, then add it as a second entry in the array above, e.g.:
   //
-  // To turn it on:
-  //   1. In the Cloudflare dashboard: Workers & Pages -> KV -> Create namespace
-  //      -> name it "GUESTIMATOR_APP_STATE" (name doesn't have to match, just pick
-  //      something you'll recognize).
-  //   2. Copy the namespace ID it gives you.
-  //   3. Uncomment the block below and paste that ID in.
-  //   4. Redeploy.
-  //
-   "kv_namespaces": [
-     { "binding": "GUESTIMATOR_APP_STATE", "id": "bc2c6ff51ef746d2848ed02acf950f6f" }
-   ]
+  // "kv_namespaces": [
+  //   { "binding": "GUESTIMATOR_APP_STATE", "id": "bc2c6ff51ef746d2848ed02acf950f6f" },
+  //   { "binding": "LOGIN_ATTEMPTS", "id": "PASTE_NAMESPACE_ID_HERE" }
+  // ]
 }
