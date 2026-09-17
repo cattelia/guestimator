@@ -126,6 +126,78 @@ async function clearFailedAttempts(env, ip) {
   await env.LOGIN_ATTEMPTS.delete(`lockout:${ip}`);
 }
 
+// 6. SHARED STATE API (/api/state) — GET returns the dashboard's saved
+//    data (roster edits, active pickers, stamps, shift goal, etc.) from a
+//    KV namespace bound as GUESTIMATOR_APP_STATE; PUT overwrites it. Both
+//    sit behind the exact same auth check as the page itself — nothing new
+//    to bypass. This is what lets the same data show up on every device
+//    you log in from, instead of each browser keeping its own separate copy.
+const MAX_STATE_BODY_BYTES = 2 * 1024 * 1024; // 2MB ceiling, generous for this app's size
+
+async function handleGetState(env) {
+  if (!env.GUESTIMATOR_APP_STATE) {
+    return new Response(JSON.stringify({ error: "not_configured" }), {
+      status: 503,
+      headers: securityHeaders({ "Content-Type": "application/json" }),
+    });
+  }
+  const raw = await env.GUESTIMATOR_APP_STATE.get("state");
+  return new Response(raw || "{}", {
+    status: 200,
+    headers: securityHeaders({ "Content-Type": "application/json" }),
+  });
+}
+
+async function handlePutState(request, env) {
+  if (!env.GUESTIMATOR_APP_STATE) {
+    return new Response(JSON.stringify({ error: "not_configured" }), {
+      status: 503,
+      headers: securityHeaders({ "Content-Type": "application/json" }),
+    });
+  }
+
+  const contentLength = request.headers.get("Content-Length");
+  if (contentLength && parseInt(contentLength, 10) > MAX_STATE_BODY_BYTES) {
+    return new Response(JSON.stringify({ error: "payload_too_large" }), {
+      status: 413,
+      headers: securityHeaders({ "Content-Type": "application/json" }),
+    });
+  }
+
+  let text;
+  try {
+    text = await request.text();
+  } catch {
+    return new Response(JSON.stringify({ error: "bad_request" }), {
+      status: 400,
+      headers: securityHeaders({ "Content-Type": "application/json" }),
+    });
+  }
+  if (text.length > MAX_STATE_BODY_BYTES) {
+    return new Response(JSON.stringify({ error: "payload_too_large" }), {
+      status: 413,
+      headers: securityHeaders({ "Content-Type": "application/json" }),
+    });
+  }
+
+  // Validate it's at least well-formed JSON before storing it — never
+  // persist something that would break the app on the next load.
+  try {
+    JSON.parse(text);
+  } catch {
+    return new Response(JSON.stringify({ error: "invalid_json" }), {
+      status: 400,
+      headers: securityHeaders({ "Content-Type": "application/json" }),
+    });
+  }
+
+  await env.GUESTIMATOR_APP_STATE.put("state", text);
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: securityHeaders({ "Content-Type": "application/json" }),
+  });
+}
+
 export default {
   async fetch(request, env) {
     const expectedUser = env.BASIC_AUTH_USER;
@@ -161,6 +233,18 @@ export default {
     }
 
     await clearFailedAttempts(env, ip);
+
+    // Authenticated from here on. Handle the shared-state API before
+    // falling through to serving the static dashboard.
+    const url = new URL(request.url);
+    if (url.pathname === "/api/state") {
+      if (request.method === "GET") return handleGetState(env);
+      if (request.method === "PUT") return handlePutState(request, env);
+      return new Response(JSON.stringify({ error: "method_not_allowed" }), {
+        status: 405,
+        headers: securityHeaders({ "Content-Type": "application/json" }),
+      });
+    }
 
     // Credentials correct -> serve the real dashboard from static assets.
     const assetResponse = await env.ASSETS.fetch(request);
